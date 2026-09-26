@@ -306,31 +306,59 @@
   startCamera();
 
   // ---------- Face detection (auto d1, experimental) ----------
+  // Chrome for Android does not ship the native Shape Detection API's
+  // FaceDetector (its origin trial ended without a shipped implementation),
+  // so we lazy-load Google's MediaPipe Tasks Vision face detector from a CDN
+  // only when this optional feature is actually turned on.
+  const MP_VERSION = '0.10.14';
+  const MP_MODULE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION + '/vision_bundle.mjs';
+  const MP_WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@' + MP_VERSION + '/wasm';
+  const MP_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite';
+
   let faceDetectEnabled = false;
   let frontStream = null;
-  let faceDetector = null;
+  let mpFaceDetector = null;
   let faceLoopTimer = null;
-  const faceDetectorSupported = 'FaceDetector' in window;
+
+  async function loadMpFaceDetector() {
+    if (mpFaceDetector) return mpFaceDetector;
+    faceStatus.textContent = '顔検出ライブラリを読み込み中…(初回のみ数MBダウンロードします)';
+    const vision = await import(/* webpackIgnore: true */ MP_MODULE_URL);
+    const filesetResolver = await vision.FilesetResolver.forVisionTasks(MP_WASM_URL);
+    const baseOptions = { modelAssetPath: MP_MODEL_URL };
+    try {
+      mpFaceDetector = await vision.FaceDetector.createFromOptions(filesetResolver, {
+        baseOptions: Object.assign({ delegate: 'GPU' }, baseOptions),
+        runningMode: 'VIDEO'
+      });
+    } catch (e) {
+      mpFaceDetector = await vision.FaceDetector.createFromOptions(filesetResolver, {
+        baseOptions: Object.assign({ delegate: 'CPU' }, baseOptions),
+        runningMode: 'VIDEO'
+      });
+    }
+    return mpFaceDetector;
+  }
 
   async function enableFaceDetect() {
-    if (!faceDetectorSupported) {
-      faceStatus.textContent = 'この端末のChromeはFaceDetector(顔検出API)に未対応です。';
-      return;
-    }
+    faceBtn.disabled = true;
     try {
+      await loadMpFaceDetector();
       frontStream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: { ideal: 'user' } },
         audio: false
       });
       frontVideo.srcObject = frontStream;
       await frontVideo.play();
-      faceDetector = new FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
       faceDetectEnabled = true;
       faceBtn.textContent = 'd1 自動推定を停止';
-      faceStatus.textContent = '検出を開始しました…';
+      faceStatus.textContent = '検出中…';
       faceDetectLoop();
     } catch (err) {
-      faceStatus.textContent = '前面カメラ起動エラー: ' + (err && err.name ? err.name : err);
+      faceStatus.textContent = '顔検出を開始できません: ' + (err && err.message ? err.message : err) +
+        '(ネット接続を確認してください。初回はCDNからのダウンロードが必要です)';
+    } finally {
+      faceBtn.disabled = false;
     }
   }
 
@@ -342,12 +370,12 @@
     if (frontStream) { frontStream.getTracks().forEach(t => t.stop()); frontStream = null; }
   }
 
-  async function faceDetectLoop() {
+  function faceDetectLoop() {
     if (!faceDetectEnabled) return;
     try {
-      const faces = await faceDetector.detect(frontVideo);
-      if (faces.length > 0 && frontVideo.videoWidth) {
-        const faceWidthPx = faces[0].boundingBox.width;
+      const result = mpFaceDetector.detectForVideo(frontVideo, performance.now());
+      if (result.detections && result.detections.length > 0 && frontVideo.videoWidth) {
+        const faceWidthPx = result.detections[0].boundingBox.width;
         const frontFovRad = parseFloat(frontFovEl.value) * Math.PI / 180;
         const focalPx = (frontVideo.videoWidth / 2) / Math.tan(frontFovRad / 2);
         const realFaceWidth = parseFloat(faceWidthEl.value);
@@ -360,7 +388,7 @@
         faceStatus.textContent = '顔が見つかりません';
       }
     } catch (err) {
-      faceStatus.textContent = '検出エラー: ' + (err && err.name ? err.name : err);
+      faceStatus.textContent = '検出エラー: ' + (err && err.message ? err.message : err);
     }
     faceLoopTimer = setTimeout(faceDetectLoop, 200);
   }
@@ -369,9 +397,6 @@
     if (faceDetectEnabled) disableFaceDetect();
     else enableFaceDetect();
   });
-  if (!faceDetectorSupported) {
-    faceStatus.textContent = 'この端末のChromeはFaceDetector(顔検出API)に未対応です。';
-  }
 
   // ---------- Main render ----------
   function drawNormal() {
