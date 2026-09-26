@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>光学迷彩ディスプレイ</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #000; overflow: hidden; overscroll-behavior: none;
+    font-family: -apple-system, "Hiragino Sans", "Yu Gothic", sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  #stage { position: fixed; inset: 0; }
+  video { display: none; }
+  canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: #000; display: block; }
+
+  #toggleBtn {
+    position: fixed; top: 10px; right: 10px; z-index: 40;
+    width: 44px; height: 44px; border-radius: 50%;
+    background: rgba(30,30,30,0.7); color: #fff; border: 1px solid rgba(255,255,255,0.3);
+    font-size: 20px; line-height: 1; text-align: center;
+  }
+
+  #panel {
+    position: fixed; top: 0; right: 0; bottom: 0;
+    width: min(340px, 88vw); overflow-y: auto;
+    background: rgba(15,15,15,0.88); color: #eee;
+    padding: 56px 14px 20px; box-sizing: border-box;
+    font-size: 13px; z-index: 30;
+    transition: transform 0.2s ease;
+  }
+  #panel.hidden { transform: translateX(105%); }
+
+  .row { margin-bottom: 14px; }
+  .row label { display: flex; justify-content: space-between; margin-bottom: 4px; color: #bbb; }
+  .row label span.val { color: #7fd; font-variant-numeric: tabular-nums; }
+  input[type=range] { width: 100%; }
+  input[type=number] { width: 70px; background:#222; color:#eee; border:1px solid #444; border-radius:4px; padding:3px 5px; }
+
+  .section-title { color: #9cf; font-weight: bold; margin: 16px 0 8px; border-bottom: 1px solid #444; padding-bottom: 4px; }
+  .btn {
+    display: inline-block; background: #2a4; color: #fff; border: none; border-radius: 6px;
+    padding: 8px 12px; margin: 4px 4px 4px 0; font-size: 13px;
+  }
+  .btn.secondary { background: #446; }
+  .btn.warn { background: #a33; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+
+  #info { font-size: 12px; color: #9c9; line-height: 1.6; background: rgba(255,255,255,0.05); padding: 8px; border-radius: 6px; }
+  #info .warn { color: #fc6; }
+
+  #errorOverlay {
+    position: fixed; inset: 0; z-index: 60; display: none;
+    background: rgba(0,0,0,0.94); color: #f77; padding: 24px; box-sizing: border-box;
+    font-family: monospace; font-size: 13px; white-space: pre-wrap; overflow-y: auto;
+  }
+  #errorOverlay h2 { color: #f77; margin-top: 0; }
+  #errorOverlay .hint { color: #ddd; font-family: sans-serif; margin-top: 16px; line-height: 1.6; }
+
+  #calibOverlay { position: fixed; inset: 0; z-index: 25; display: none; }
+  .calibLine { position: absolute; top: 0; bottom: 0; width: 2px; background: #0f0; pointer-events: none; }
+  .calibLine.b { background: #ff0; }
+  #calibPanel {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 26;
+    background: rgba(15,15,15,0.9); color: #eee; padding: 12px 14px 18px;
+    box-sizing: border-box; font-size: 13px;
+  }
+  #calibPanel .row label { display:flex; justify-content: space-between; color:#bbb; margin-bottom:4px;}
+  #calibResult { color: #7fd; margin: 8px 0; font-size: 13px; }
+
+  .help {
+    font-size: 11px; color: #888; margin-top: 18px; line-height: 1.6;
+    border-top: 1px solid #333; padding-top: 10px;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <video id="video" playsinline autoplay muted></video>
+  <video id="frontVideo" playsinline autoplay muted></video>
+  <canvas id="canvas"></canvas>
+</div>
+
+<button id="toggleBtn">⚙</button>
+
+<div id="panel">
+  <div class="section-title">映像表示エリア</div>
+  <div class="row">
+    <label>横幅 w (cm) <span class="val" id="wVal"></span></label>
+    <input type="range" id="w" min="5" max="80" step="0.5" value="25">
+  </div>
+
+  <div class="section-title">距離</div>
+  <div class="row">
+    <label>観察者目〜画面 d1 (cm) <span class="val" id="d1Val"></span></label>
+    <input type="range" id="d1" min="10" max="200" step="1" value="40">
+  </div>
+  <div class="row">
+    <label>画面〜背景 d2 (cm) <span class="val" id="d2Val"></span></label>
+    <input type="range" id="d2" min="10" max="1000" step="1" value="100">
+  </div>
+
+  <div class="section-title">カメラ</div>
+  <div class="row">
+    <label>水平画角 FOV (度) <span class="val" id="fovVal"></span></label>
+    <input type="range" id="fov" min="30" max="130" step="0.5" value="70">
+  </div>
+  <button class="btn secondary" id="calibBtn">FOV較正モード</button>
+
+  <div class="section-title">カメラ位置補正 / チルト</div>
+  <div class="row">
+    <label>横オフセット (cm) <span class="val" id="offsetHVal"></span></label>
+    <input type="range" id="offsetH" min="-10" max="10" step="0.1" value="0">
+  </div>
+  <div class="row">
+    <label>縦オフセット (cm) <span class="val" id="offsetVVal"></span></label>
+    <input type="range" id="offsetV" min="-10" max="10" step="0.1" value="0">
+  </div>
+  <div class="row">
+    <label>チルト角度 (度) <span class="val" id="tiltVal"></span></label>
+    <input type="range" id="tilt" min="-20" max="20" step="0.5" value="0">
+  </div>
+
+  <div class="section-title">距離自動推定(顔検出・実験的)</div>
+  <button class="btn secondary" id="faceBtn">前面カメラで d1 自動推定を開始</button>
+  <div class="row" style="margin-top:10px;">
+    <label>前面カメラFOV (度) <span class="val" id="frontFovVal"></span></label>
+    <input type="range" id="frontFov" min="50" max="100" step="1" value="80">
+  </div>
+  <div class="row" style="display:flex; gap:10px; align-items:center;">
+    <div>顔の実幅(cm) <input type="number" id="faceWidth" value="14" step="0.5"></div>
+  </div>
+  <div id="faceStatus" style="font-size:12px; color:#9c9;"></div>
+
+  <div class="section-title">表示</div>
+  <div class="checkbox-row">
+    <input type="checkbox" id="mirror">
+    <label for="mirror">左右反転</label>
+  </div>
+  <button class="btn secondary" id="hideBtn">パネルを隠す(全画面)</button>
+
+  <div class="section-title">計算結果</div>
+  <div id="info"></div>
+
+  <div class="help">
+    ・Android Chromeでカメラを起動するには、file:///sdcard/Download/このファイル名.html を
+    アドレス欄に直接入力して開くか、GitHub Pages等でhttps公開してください。<br>
+    ・ダウンロード画面/ファイルマネージャーからのタップ(content://)ではカメラ許可が出ません。
+  </div>
+</div>
+
+<div id="calibOverlay">
+  <canvas id="calibCanvas"></canvas>
+  <div class="calibLine" id="lineA"></div>
+  <div class="calibLine b" id="lineB"></div>
+  <div id="calibPanel">
+    <div class="row">
+      <label>線A 位置 (%) <span class="val" id="lineAVal"></span></label>
+      <input type="range" id="lineASlider" min="0" max="100" step="0.1" value="35">
+    </div>
+    <div class="row">
+      <label>線B 位置 (%) <span class="val" id="lineBVal"></span></label>
+      <input type="range" id="lineBSlider" min="0" max="100" step="0.1" value="65">
+    </div>
+    <div class="row" style="display:flex; gap:10px;">
+      <div>実幅(cm) <input type="number" id="knownWidth" value="30" step="0.5"></div>
+      <div>距離(cm) <input type="number" id="knownDist" value="100" step="1"></div>
+    </div>
+    <div id="calibResult"></div>
+    <button class="btn" id="calibApplyBtn">FOVに適用</button>
+    <button class="btn warn" id="calibCloseBtn">較正終了</button>
+  </div>
+</div>
+
+<div id="errorOverlay">
+  <h2>カメラを起動できませんでした</h2>
+  <div id="errorDetail"></div>
+  <div class="hint">
+    Android Chromeで背面カメラを使うには、安全なコンテキスト(secure context)である必要があります。<br><br>
+    ・<b>ファイルマネージャーからこのHTMLを開いた場合</b>(content://…)は許可ダイアログ自体が出ません。<br>
+    &nbsp;&nbsp;Chromeのアドレス欄に <code>file:///sdcard/Download/ファイル名.html</code> を直接入力して開き直してください。<br>
+    ・それでもダメな場合は、GitHub Pagesなどhttpsで公開して開いてください。<br><br>
+    <button class="btn" id="retryBtn">再試行</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const video = document.getElementById('video');
+  const canvas = document.getElementById('canvas');
+  const ctx = canvas.getContext('2d');
+
+  const panel = document.getElementById('panel');
+  const toggleBtn = document.getElementById('toggleBtn');
+  const hideBtn = document.getElementById('hideBtn');
+
+  const wEl = document.getElementById('w');
+  const d1El = document.getElementById('d1');
+  const d2El = document.getElementById('d2');
+  const fovEl = document.getElementById('fov');
+  const offsetHEl = document.getElementById('offsetH');
+  const offsetVEl = document.getElementById('offsetV');
+  const tiltEl = document.getElementById('tilt');
+  const mirrorEl = document.getElementById('mirror');
+
+  const frontVideo = document.getElementById('frontVideo');
+  const faceBtn = document.getElementById('faceBtn');
+  const frontFovEl = document.getElementById('frontFov');
+  const frontFovVal = document.getElementById('frontFovVal');
+  const faceWidthEl = document.getElementById('faceWidth');
+  const faceStatus = document.getElementById('faceStatus');
+
+  const wVal = document.getElementById('wVal');
+  const d1Val = document.getElementById('d1Val');
+  const d2Val = document.getElementById('d2Val');
+  const fovVal = document.getElementById('fovVal');
+  const offsetHVal = document.getElementById('offsetHVal');
+  const offsetVVal = document.getElementById('offsetVVal');
+  const tiltVal = document.getElementById('tiltVal');
+
+  const infoEl = document.getElementById('info');
+
+  const errorOverlay = document.getElementById('errorOverlay');
+  const errorDetail = document.getElementById('errorDetail');
+  const retryBtn = document.getElementById('retryBtn');
+
+  const calibBtn = document.getElementById('calibBtn');
+  const calibOverlay = document.getElementById('calibOverlay');
+  const calibCanvas = document.getElementById('calibCanvas');
+  const calibCtx = calibCanvas.getContext('2d');
+  const lineA = document.getElementById('lineA');
+  const lineB = document.getElementById('lineB');
+  const lineASlider = document.getElementById('lineASlider');
+  const lineBSlider = document.getElementById('lineBSlider');
+  const lineAVal = document.getElementById('lineAVal');
+  const lineBVal = document.getElementById('lineBVal');
+  const knownWidthEl = document.getElementById('knownWidth');
+  const knownDistEl = document.getElementById('knownDist');
+  const calibResult = document.getElementById('calibResult');
+  const calibApplyBtn = document.getElementById('calibApplyBtn');
+  const calibCloseBtn = document.getElementById('calibCloseBtn');
+
+  let mode = 'normal'; // 'normal' | 'calib'
+  let calibFovDeg = null;
+
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    calibCanvas.width = window.innerWidth;
+    calibCanvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  function updateLabels() {
+    wVal.textContent = parseFloat(wEl.value).toFixed(1);
+    d1Val.textContent = parseFloat(d1El.value).toFixed(0);
+    d2Val.textContent = parseFloat(d2El.value).toFixed(0);
+    fovVal.textContent = parseFloat(fovEl.value).toFixed(1);
+    offsetHVal.textContent = parseFloat(offsetHEl.value).toFixed(1);
+    offsetVVal.textContent = parseFloat(offsetVEl.value).toFixed(1);
+    tiltVal.textContent = parseFloat(tiltEl.value).toFixed(1);
+    frontFovVal.textContent = parseFloat(frontFovEl.value).toFixed(0);
+  }
+  [wEl, d1El, d2El, fovEl, offsetHEl, offsetVEl, tiltEl, frontFovEl].forEach(el =>
+    el.addEventListener('input', updateLabels)
+  );
+  updateLabels();
+
+  toggleBtn.addEventListener('click', () => panel.classList.toggle('hidden'));
+  hideBtn.addEventListener('click', () => panel.classList.add('hidden'));
+
+  mirrorEl.addEventListener('change', () => {});
+
+  // ---------- Camera start ----------
+  async function startCamera() {
+    errorOverlay.style.display = 'none';
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError({ name: 'UnsupportedContext', message: 'getUserMedia is unavailable in this context.' });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false
+      });
+      video.srcObject = stream;
+      await video.play();
+    } catch (err) {
+      showError(err);
+    }
+  }
+
+  function showError(err) {
+    errorDetail.textContent =
+      'エラー種別: ' + (err && err.name ? err.name : '(不明)') + '\n' +
+      'メッセージ: ' + (err && err.message ? err.message : '(なし)') + '\n' +
+      'window.isSecureContext: ' + window.isSecureContext + '\n' +
+      'location.href: ' + location.href + '\n' +
+      'protocol: ' + location.protocol;
+    errorOverlay.style.display = 'block';
+  }
+  retryBtn.addEventListener('click', startCamera);
+  startCamera();
+
+  // ---------- Face detection (auto d1, experimental) ----------
+  let faceDetectEnabled = false;
+  let frontStream = null;
+  let faceDetector = null;
+  let faceLoopTimer = null;
+  const faceDetectorSupported = 'FaceDetector' in window;
+
+  async function enableFaceDetect() {
+    if (!faceDetectorSupported) {
+      faceStatus.textContent = 'この端末のChromeはFaceDetector(顔検出API)に未対応です。';
+      return;
+    }
+    try {
+      frontStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'user' } },
+        audio: false
+      });
+      frontVideo.srcObject = frontStream;
+      await frontVideo.play();
+      faceDetector = new FaceDetector({ fastMode: true, maxDetectedFaces: 1 });
+      faceDetectEnabled = true;
+      faceBtn.textContent = 'd1 自動推定を停止';
+      faceStatus.textContent = '検出を開始しました…';
+      faceDetectLoop();
+    } catch (err) {
+      faceStatus.textContent = '前面カメラ起動エラー: ' + (err && err.name ? err.name : err);
+    }
+  }
+
+  function disableFaceDetect() {
+    faceDetectEnabled = false;
+    faceBtn.textContent = '前面カメラで d1 自動推定を開始';
+    faceStatus.textContent = '';
+    if (faceLoopTimer) { clearTimeout(faceLoopTimer); faceLoopTimer = null; }
+    if (frontStream) { frontStream.getTracks().forEach(t => t.stop()); frontStream = null; }
+  }
+
+  async function faceDetectLoop() {
+    if (!faceDetectEnabled) return;
+    try {
+      const faces = await faceDetector.detect(frontVideo);
+      if (faces.length > 0 && frontVideo.videoWidth) {
+        const faceWidthPx = faces[0].boundingBox.width;
+        const frontFovRad = parseFloat(frontFovEl.value) * Math.PI / 180;
+        const focalPx = (frontVideo.videoWidth / 2) / Math.tan(frontFovRad / 2);
+        const realFaceWidth = parseFloat(faceWidthEl.value);
+        const distCm = (realFaceWidth * focalPx) / faceWidthPx;
+        const clamped = Math.max(parseFloat(d1El.min), Math.min(parseFloat(d1El.max), distCm));
+        d1El.value = clamped.toFixed(0);
+        updateLabels();
+        faceStatus.textContent = '検出中: 推定 d1 = ' + distCm.toFixed(1) + ' cm';
+      } else {
+        faceStatus.textContent = '顔が見つかりません';
+      }
+    } catch (err) {
+      faceStatus.textContent = '検出エラー: ' + (err && err.name ? err.name : err);
+    }
+    faceLoopTimer = setTimeout(faceDetectLoop, 200);
+  }
+
+  faceBtn.addEventListener('click', () => {
+    if (faceDetectEnabled) disableFaceDetect();
+    else enableFaceDetect();
+  });
+  if (!faceDetectorSupported) {
+    faceStatus.textContent = 'この端末のChromeはFaceDetector(顔検出API)に未対応です。';
+  }
+
+  // ---------- Main render ----------
+  function drawNormal() {
+    const dispW = canvas.width, dispH = canvas.height;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, dispW, dispH);
+
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+
+    const w = parseFloat(wEl.value);
+    const d1 = parseFloat(d1El.value);
+    const d2 = parseFloat(d2El.value);
+    const fovDeg = parseFloat(fovEl.value);
+    const offsetH = parseFloat(offsetHEl.value);
+    const offsetV = parseFloat(offsetVEl.value);
+    const tiltDeg = parseFloat(tiltEl.value);
+    const mirror = mirrorEl.checked;
+
+    const fovRad = fovDeg * Math.PI / 180;
+    const Wv = w * (d1 + d2) / d1;
+    const Ws = 2 * d2 * Math.tan(fovRad / 2);
+
+    let fraction = Wv / Ws;
+    let clamped = false;
+    if (fraction > 1) { fraction = 1; clamped = true; }
+    if (fraction < 0.001) fraction = 0.001;
+
+    const pxPerCm = vw / Ws;
+
+    let sWidth = vw * fraction;
+    let sx = (vw - sWidth) / 2 + offsetH * pxPerCm;
+
+    const aspect = dispH / dispW;
+    let sHeight = sWidth * aspect;
+    let sy, dx, dy, dw, dh;
+
+    if (sHeight <= vh) {
+      sy = (vh - sHeight) / 2 + offsetV * pxPerCm;
+      dx = 0; dy = 0; dw = dispW; dh = dispH;
+    } else {
+      sHeight = vh;
+      sy = offsetV * pxPerCm;
+      const scale = dispW / sWidth;
+      dw = dispW;
+      dh = vh * scale;
+      dx = 0;
+      dy = (dispH - dh) / 2;
+    }
+
+    sx = Math.max(0, Math.min(vw - sWidth, sx));
+    sy = Math.max(0, Math.min(vh - sHeight, sy));
+
+    ctx.save();
+    ctx.translate(dispW / 2, dispH / 2);
+    ctx.rotate(tiltDeg * Math.PI / 180);
+    if (mirror) ctx.scale(-1, 1);
+    ctx.translate(-dispW / 2, -dispH / 2);
+    ctx.drawImage(video, sx, sy, sWidth, sHeight, dx, dy, dw, dh);
+    ctx.restore();
+
+    const mag = 1 / fraction;
+    infoEl.innerHTML =
+      'Wv(必要な背景幅): ' + Wv.toFixed(1) + ' cm<br>' +
+      'Ws(カメラが写す幅): ' + Ws.toFixed(1) + ' cm<br>' +
+      '倍率: ' + mag.toFixed(2) + '倍' +
+      (clamped ? '<br><span class="warn">⚠ FOV不足のため必要倍率を確保できません(全幅表示中)</span>' : '') +
+      (sHeight >= vh - 0.5 ? '<br><span class="warn">⚠ 縦方向の映像が不足(上下を黒で補完)</span>' : '');
+  }
+
+  // ---------- Calibration ----------
+  let calibRect = { dx: 0, dy: 0, dw: 0, dh: 0 };
+
+  function drawCalib() {
+    const dispW = calibCanvas.width, dispH = calibCanvas.height;
+    calibCtx.fillStyle = '#000';
+    calibCtx.fillRect(0, 0, dispW, dispH);
+
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+
+    const scale = Math.min(dispW / vw, dispH / vh);
+    const dw = vw * scale, dh = vh * scale;
+    const dx = (dispW - dw) / 2, dy = (dispH - dh) / 2;
+    calibRect = { dx, dy, dw, dh };
+
+    calibCtx.drawImage(video, 0, 0, vw, vh, dx, dy, dw, dh);
+
+    const aPct = parseFloat(lineASlider.value);
+    const bPct = parseFloat(lineBSlider.value);
+    lineA.style.left = (dx + (aPct / 100) * dw) + 'px';
+    lineB.style.left = (dx + (bPct / 100) * dw) + 'px';
+    lineAVal.textContent = aPct.toFixed(1);
+    lineBVal.textContent = bPct.toFixed(1);
+  }
+
+  calibBtn.addEventListener('click', () => {
+    mode = 'calib';
+    calibOverlay.style.display = 'block';
+    panel.classList.add('hidden');
+  });
+  calibCloseBtn.addEventListener('click', () => {
+    mode = 'normal';
+    calibOverlay.style.display = 'none';
+    panel.classList.remove('hidden');
+  });
+  calibApplyBtn.addEventListener('click', () => {
+    const aPct = parseFloat(lineASlider.value) / 100;
+    const bPct = parseFloat(lineBSlider.value) / 100;
+    const ratio = Math.abs(bPct - aPct);
+    const realWidth = parseFloat(knownWidthEl.value);
+    const dist = parseFloat(knownDistEl.value);
+    if (ratio < 0.001 || !realWidth || !dist) {
+      calibResult.textContent = '入力値を確認してください(線が近すぎる/未入力)。';
+      return;
+    }
+    const fovRad = 2 * Math.atan((realWidth / ratio / 2) / dist);
+    const fovDeg = fovRad * 180 / Math.PI;
+    calibFovDeg = fovDeg;
+    calibResult.textContent = '算出FOV: ' + fovDeg.toFixed(1) + '度';
+    fovEl.value = Math.max(parseFloat(fovEl.min), Math.min(parseFloat(fovEl.max), fovDeg)).toFixed(1);
+    updateLabels();
+  });
+
+  // ---------- Loop ----------
+  function loop() {
+    if (mode === 'normal') {
+      drawNormal();
+    } else {
+      drawCalib();
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
